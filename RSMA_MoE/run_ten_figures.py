@@ -267,7 +267,7 @@ FIGURES = FIGURES + (
            source_figure_number=2),
     Figure(13, "deadline_bandwidth", (2, 4, 6, 8, 10),
            _set_deadline_sensitivity,
-           "bandwidth_cost", "Average deadline (s)", "Bandwidth cost",
+           "bandwidth_cost", "Delay constraint (s)", "Bandwidth cost",
            paired=True, source_figure_number=4),
     Figure(14, "deadline_finish_rate", (0.75, 1.0, 1.25, 1.5, 1.75, 2.0),
            _set_deadline_sensitivity,
@@ -275,8 +275,16 @@ FIGURES = FIGURES + (
            paired=True, accept_all=True),
     Figure(15, "required_features_comm", (40, 50, 60, 70, 80),
            _set_required_features_per_task,
-           "communication_cost", "Average number of required features per task",
+           "communication_cost", "#required features per task",
            "Communication cost",
+           source_figure_number=9),
+    Figure(16, "num_tasks_activated_experts", (10, 15, 20, 25, 30),
+           lambda c, v: replace(c, num_dags=int(v)),
+           "num_activated_experts", "Number of tasks", "Number of activated experts",
+           source_figure_number=1),
+    Figure(17, "required_features_success_rate", (40, 50, 60, 70, 80),
+           _set_required_features_per_task,
+           "success_rate", "Average number of required features per task", "Success rate",
            source_figure_number=9),
 )
 FIGURE_BY_NUMBER = {figure.number: figure for figure in FIGURES}
@@ -286,7 +294,7 @@ FIELDS = (
     "method_key", "total_cost", "activation_cost", "bandwidth_cost",
     "forwarding_cost", "inference_cost", "communication_cost",
     "num_groups", "single_groups", "multi_groups", "finish_rate",
-    "num_iots_used",
+    "num_iots_used", "num_activated_experts",
 )
 METHOD_FLAGS = (
     "run_hybrid_topk_gssgd_backhaul",
@@ -325,6 +333,13 @@ def _record(result: Any, num_tasks: int | None = None) -> dict[str, float]:
         for members in members_list
         for device in members
     })
+    # Distinct (server, expert) pairs selected by any subtask instance, i.e. the
+    # activated experts counted in the activation cost (y_{s,p} = 1).
+    num_activated_experts = len({
+        (server_id, expert_id)
+        for pairs in (getattr(result, "subtask_assignment", {}) or {}).values()
+        for server_id, expert_id in pairs
+    })
     return {
         "total_cost": float(getattr(result, "total_cost", 0.0)),
         "activation_cost": float(getattr(result, "activation_cost", 0.0)),
@@ -337,6 +352,7 @@ def _record(result: Any, num_tasks: int | None = None) -> dict[str, float]:
         "multi_groups": num_groups - single_groups,
         "finish_rate": finish_rate,
         "num_iots_used": num_iots_used,
+        "num_activated_experts": num_activated_experts,
     }
 
 
@@ -510,6 +526,34 @@ def run_figure(job: tuple[int, int, int, str, bool]) -> str:
     return f"Fig {figure.number} done"
 
 
+def _success_rows(fig_dir: Path) -> list[dict]:
+    """Per-method success (1 = no constraint violation) of every attempt.
+
+    Read from attempts.csv, so all attempted instances count, not only the
+    accepted ones.  Attempts that failed before the methods ran (an "error"
+    entry instead of per-method counts) are skipped.
+    """
+    path = fig_dir / "attempts.csv"
+    if not path.exists():
+        return []
+    rows = []
+    with path.open(encoding="utf-8") as file:
+        for attempt in csv.DictReader(file):
+            try:
+                violations = json.loads(attempt.get("violations") or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(violations, dict) or "error" in violations:
+                continue
+            for method_key, count in violations.items():
+                rows.append({
+                    "x": attempt["x"], "attempt": attempt["attempt"],
+                    "method_key": method_key,
+                    "success_rate": 1.0 if count == 0 else 0.0,
+                })
+    return rows
+
+
 def _rows(fig_dir: Path) -> list[dict]:
     path = fig_dir / "observations.csv"
     if not path.exists():
@@ -593,7 +637,8 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
 def _plot_one_impl(run_dir: Path, figure: Figure) -> list[dict]:
     """Draw one line chart (mean of accepted runs per x) and return summary rows."""
     source = FIGURE_BY_NUMBER[figure.source_figure_number] if figure.source_figure_number else figure
-    rows = _rows(_figure_dir(run_dir, source))
+    success_metric = figure.metric == "success_rate"
+    rows = (_success_rows if success_metric else _rows)(_figure_dir(run_dir, source))
     if not rows:
         return []
     # Runs recorded before a metric existed (e.g. num_iots_used) lack that column.
@@ -603,7 +648,10 @@ def _plot_one_impl(run_dir: Path, figure: Figure) -> list[dict]:
               f"{_figure_dir(run_dir, source).name}; skipped "
               f"(rerun Fig {source.number} with --new to record it).")
         return []
-    rows, removed = _select_rows(figure, rows)
+    if success_metric:  # 0/1 outcomes over all attempts: no outlier removal or run cap
+        removed = []
+    else:
+        rows, removed = _select_rows(figure, rows)
     PLOT_OPTIONS.setdefault("removed", []).extend(removed)
     paper = bool(PLOT_OPTIONS.get("paper"))
     figure_dir = run_dir / ("figures_paper" if paper else "figures")
@@ -634,7 +682,7 @@ def _plot_one_impl(run_dir: Path, figure: Figure) -> list[dict]:
                       linewidth=1.5 if paper else 2, markersize=6 if paper else 9, label=PLOT_LABELS.get(method_key, METHOD_DISPLAY_NAMES.get(method_key, method_key)))
     if figure.log_y:
         axis.set_yscale("log")
-    if figure.metric == "finish_rate":
+    if figure.metric in ("finish_rate", "success_rate"):
         axis.set_ylim(0.0, 1.05)
     axis.set_xlabel(figure.x_label)
     ylabel_text = {
@@ -719,8 +767,8 @@ def _latest_unfinished(root: Path) -> Path | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--runs", type=int, default=20, help="accepted runs per x value (default 20)")
-    parser.add_argument("--max-attempts", type=int, default=50, help="attempt limit per x value")
+    parser.add_argument("--runs", type=int, default=500, help="accepted runs per x value (default 500)")
+    parser.add_argument("--max-attempts", type=int, default=5000, help="attempt limit per x value")
     parser.add_argument("--figures", default="all", help="e.g. 1,2,5 (default: all)")
     parser.add_argument("--workers", type=int, default=0,
                         help="parallel processes (default: CPU cores - 1, at most 10)")
@@ -732,8 +780,8 @@ def main() -> None:
                         help="when plotting, keep all runs (by default runs where any method exceeds "
                              "--outlier-factor x its median are dropped)")
     parser.add_argument("--outlier-factor", type=float, default=10.0, help="outlier threshold (default 10 x median)")
-    parser.add_argument("--plot-runs", type=int, default=5,
-                        help="when plotting, average the first N non-outlier runs per x value (default 5; 0 = all)")
+    parser.add_argument("--plot-runs", type=int, default=300,
+                        help="when plotting, average the first N non-outlier runs per x value (default 300; 0 = all)")
     parser.add_argument("--paper", action="store_true",
                         help="draw print-size panels (3.4 x 1.9 in, PDF + 600-dpi PNG) into figures_paper/")
     parser.add_argument("--no-legend", action="store_true",
@@ -774,6 +822,8 @@ def main() -> None:
         "fig13": "bandwidth costs from fig4 observations; no additional simulation",
         "fig11": "number of distinct IoTs used from fig9 observations (required features per task 40-80); no additional simulation",
         "fig15": "communication cost from fig9 observations; no additional simulation",
+        "fig17": "success rate (fraction of attempted instances with no constraint violation) from fig9 attempts.csv; no additional simulation",
+        "fig16": "number of activated experts (distinct server-expert pairs) from fig1 observations; no additional simulation",
     }, indent=2), encoding="utf-8")
 
     workers = args.workers or max(1, min(10, (os.cpu_count() or 2) - 1))

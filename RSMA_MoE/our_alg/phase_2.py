@@ -582,9 +582,8 @@ class Phase2GroupingBackhaulMixin:
         # Cluster the selected IoTs by their preliminary uplink server
         # o_n = argmax_{s in S_n} |h_{n,s}|^2.  The MST/BFS is built inside each
         # cluster only, so IoTs sharing the same best-channel server become
-        # consecutive in the ordering.  o_n is used only for the ordering; the
-        # actual uplink server o(g) of a candidate group is still chosen by the
-        # DP over the members' common reachable servers.
+        # consecutive in the ordering.  The DP only forms groups inside one o_n
+        # cluster, and o(g) = o_n (see _cfrg_delivery_info).
         origin: Dict[DeviceId, ServerId | None] = {
             device_id: self._updated_best_origin(device_id) for device_id in devices
         }
@@ -873,21 +872,15 @@ class Phase2GroupingBackhaulMixin:
     ) -> dict[str, Any] | None:
         if not members:
             return None
-        feasible_servers = set(self.servers)
-        for device_id in members:
-            feasible_servers &= self._cfrg_reachable_servers(device_id)
-        if not feasible_servers:
+        # Candidate groups contain IoTs sharing the same preliminary uplink
+        # server o_n = argmax_{s in S_n} |h_{n,s}|^2, which serves as o(g).
+        member_origins = {self._updated_best_origin(device_id) for device_id in members}
+        if len(member_origins) != 1:
             return None
-        origin = max(
-            feasible_servers,
-            key=lambda server_id: (
-                min(
-                    self.evaluator.channel_gain(device_id, server_id) ** 2
-                    for device_id in members
-                ),
-                server_id,
-            ),
-        )
+        origin = next(iter(member_origins))
+        if origin is None:
+            return None
+        feasible_servers = {origin}
         worst_channel_gain = min(
             self.evaluator.channel_gain(device_id, origin) ** 2
             for device_id in members
