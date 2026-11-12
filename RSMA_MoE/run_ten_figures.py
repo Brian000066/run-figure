@@ -73,7 +73,17 @@ from experiment_runner import (  # noqa: E402
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-OUTPUT_ROOT = BASE_DIR / "results" / "ten_figures"
+# run_structure_figures.py sets these environment variables (inherited by the
+# worker processes) to switch on shared-structure DAGs and a separate folder.
+OUTPUT_ROOT = BASE_DIR / "results" / os.environ.get("RSMA_RESULTS_SUBDIR", "ten_figures")
+
+
+def _env_chain_range() -> tuple[int, int] | None:
+    text = os.environ.get("RSMA_SHARED_CHAIN_RANGE", "").strip()
+    if not text:
+        return None
+    lo, hi = (int(part) for part in text.split(","))
+    return (lo, hi)
 
 METHOD_ORDER = (
     "hybrid_topk_gssgd_backhaul",
@@ -386,6 +396,7 @@ def _base_config(fig_dir: Path) -> ExperimentConfig:
         run_wdmoe_gssgd=True,
         run_wdmoe_location_aware=True,
         run_our_similarity_aware_topk_backhaul=True,
+        shared_chain_length_range=_env_chain_range(),
     )
 
 

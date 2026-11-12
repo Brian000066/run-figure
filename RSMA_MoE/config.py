@@ -91,6 +91,11 @@ class ExperimentConfig:
     # If set, exactly this many shared subtask kinds are created (each in
     # 2-4 DAGs) and shared_subtask_ratio is ignored.
     shared_subtask_kind_count: int | None = None
+    # Shared-structure mode (None = off, original random single-node sharing).
+    # (lo, hi): shared IDs are assigned to directed chains of lo..hi connected
+    # subtasks, and the same chain is reused in 2-4 DAGs.  Used by
+    # run_structure_figures.py.
+    shared_chain_length_range: tuple[int, int] | None = None
     # Fig. 3 nested design: base server count kept identical for every larger count (None = off).
     nested_server_base: int | None = None
     # Fig. 7 nested storage: base experts_per_server range kept for every larger average (None = off).

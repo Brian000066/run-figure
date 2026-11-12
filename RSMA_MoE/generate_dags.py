@@ -665,12 +665,105 @@ def save_dag_json(graph: nx.DiGraph, output_path: Path) -> None:
     )
 
 
+def _chain_paths(graph: nx.DiGraph, available: list[str], length: int) -> list[list[str]]:
+    """All directed paths of `length` nodes whose nodes are still available."""
+    allowed = set(available)
+    found: list[list[str]] = []
+
+    def walk(path: list[str]) -> None:
+        if len(path) == length:
+            found.append(list(path))
+            return
+        for nxt in graph.successors(path[-1]):
+            nxt = str(nxt)
+            if nxt in allowed and nxt not in path:
+                walk(path + [nxt])
+
+    for start in sorted(allowed, key=lambda name: int(str(name).rsplit("_", 1)[-1])):
+        walk([start])
+    return found
+
+
+def _assign_shared_chains(
+    graph_by_index: dict[int, nx.DiGraph],
+    available_by_graph: dict[int, list[str]],
+    occurrences: dict[str, list[tuple[nx.DiGraph, str]]],
+    rng: random.Random,
+    length_range: tuple[int, int],
+    min_graphs: int,
+    max_graphs: int,
+    kind_count: Optional[int],
+    target_instances: int,
+) -> None:
+    """Shared-structure mode: each shared group is a chain of connected subtasks.
+
+    A chain of L nodes (L drawn from length_range) is placed on a directed path
+    of L available nodes in each of 2-4 distinct DAGs, so the same sub-chain
+    (same IDs, same order) appears in every selected DAG.
+
+    kind_count set  -> exactly kind_count shared subtask kinds (nodes) in total.
+    kind_count None -> chains are added until about target_instances shared
+                       instances are assigned (same ratio as the default mode).
+    """
+    lo, hi = length_range
+    counter = 0
+    kinds_left = int(kind_count) if kind_count is not None else None
+    instances_left = target_instances
+    stalls = 0
+    while stalls < 50:
+        if kinds_left is not None:
+            if kinds_left <= 0:
+                break
+            length = min(rng.randint(lo, hi), kinds_left)
+        else:
+            if instances_left < 2 * min_graphs:
+                break
+            length = rng.randint(lo, hi)
+        placed = False
+        while length >= 1 and not placed:
+            candidates = {}
+            for graph_index, nodes in available_by_graph.items():
+                paths = _chain_paths(graph_by_index[graph_index], nodes, length)
+                if paths:
+                    candidates[graph_index] = paths
+            upper = min(max_graphs, len(candidates))
+            if kinds_left is None:
+                upper = min(upper, instances_left // length)
+            if upper < min_graphs:
+                length -= 1
+                continue
+            count = rng.randint(min_graphs, upper)
+            selected = rng.sample(sorted(candidates), count)
+            ids = [f"shared_subtask_{counter + j}" for j in range(length)]
+            counter += length
+            for unique_id in ids:
+                occurrences[unique_id] = []
+            for graph_index in selected:
+                graph = graph_by_index[graph_index]
+                path = rng.choice(candidates[graph_index])
+                for unique_id, node in zip(ids, path):
+                    available_by_graph[graph_index].remove(node)
+                    occurrences.pop(str(graph.nodes[node]["unique_subtask_id"]))
+                    graph.nodes[node]["unique_subtask_id"] = unique_id
+                    occurrences[unique_id].append((graph, str(node)))
+            if kinds_left is not None:
+                kinds_left -= length
+            else:
+                instances_left -= count * length
+            placed = True
+        if not placed:
+            stalls += 1
+            if kinds_left is not None:
+                break
+
+
 def assign_unique_subtask_ids(
     graphs: Sequence[nx.DiGraph],
     rng: random.Random,
     shared_subtask_ratio: float,
     shared_subtask_graph_count_range: tuple[int, int],
     shared_subtask_kind_count: Optional[int] = None,
+    shared_chain_length_range: Optional[tuple[int, int]] = None,
 ) -> dict[str, list[tuple[nx.DiGraph, str]]]:
     """Assign private IDs and randomly reuse some IDs across distinct DAGs.
 
@@ -708,6 +801,17 @@ def assign_unique_subtask_ids(
     target_shared_instances = round(total_instances * shared_subtask_ratio)
     assigned_shared_instances = 0
     shared_counter = 0
+
+    if shared_chain_length_range is not None:
+        # Shared-structure mode: reuse connected chains instead of single nodes.
+        _assign_shared_chains(
+            graph_by_index, available_by_graph, occurrences, rng,
+            shared_chain_length_range, min_graphs, max_graphs,
+            kind_count=shared_subtask_kind_count,
+            target_instances=target_shared_instances,
+        )
+        shared_subtask_kind_count = None
+        target_shared_instances = 0  # skip the single-node assignment below
 
     if shared_subtask_kind_count is not None:
         # Fixed number of shared kinds: each kind appears in
@@ -964,6 +1068,7 @@ def generate_multiple_dags(
     shared_subtask_ratio: float = 0.4,
     shared_subtask_graph_count_range: tuple[int, int] = (2, 4),
     shared_subtask_kind_count: Optional[int] = None,
+    shared_chain_length_range: Optional[tuple[int, int]] = None,
     verbose: bool = True,
     export_artifacts: bool = True,
 ) -> list[nx.DiGraph]:
@@ -1001,6 +1106,7 @@ def generate_multiple_dags(
         shared_subtask_ratio=shared_subtask_ratio,
         shared_subtask_graph_count_range=shared_subtask_graph_count_range,
         shared_subtask_kind_count=shared_subtask_kind_count,
+        shared_chain_length_range=shared_chain_length_range,
     )
     synchronize_shared_subtask_metadata(occurrences)
     for graph in graphs:

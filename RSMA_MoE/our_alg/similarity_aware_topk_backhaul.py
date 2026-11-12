@@ -90,11 +90,12 @@ class SimilarityAwareTopKBackhaulPipeline(
         self.phase2_report: dict[str, Any] = {"mode": "CFRG"}
         self.phase3_report: dict[str, Any] = {
             "mode": "FAR",
-            # No caps: FAR stops when a full pass yields no improvement and every
-            # candidate has been evaluated (10**9 is only an "unlimited" sentinel).
-            "max_iterations": 10**9,
-            "max_joint_assignments": 10**9,
-            "max_private_candidates": 10**9,
+            # Constant caps (restored, same values as the 11/6 version): at most
+            # 2 FAR passes, 32 joint assignments per marked block, and 48
+            # private-subtask candidate evaluations.
+            "max_iterations": 2,
+            "max_joint_assignments": 32,
+            "max_private_candidates": 48,
             "physical_link_count": len(self.physical_wired_links),
         }
         self.post_pruning_report: dict[str, Any] = {

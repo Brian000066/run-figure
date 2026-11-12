@@ -118,6 +118,7 @@ def generate_task_graphs(config: ExperimentConfig, seeds: RunSeeds, verbose: boo
         shared_subtask_ratio=config.shared_subtask_ratio,
         shared_subtask_graph_count_range=config.shared_subtask_graph_count_range,
         shared_subtask_kind_count=config.shared_subtask_kind_count,
+        shared_chain_length_range=getattr(config, "shared_chain_length_range", None),
         verbose=verbose,
         export_artifacts=export_artifacts,
     )
