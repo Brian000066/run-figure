@@ -114,8 +114,8 @@ class ExperimentConfig:
     server_processing_rate: float | tuple[float, float] = SERVER_PROCESSING_RATE  # 300e6 for every server
     reasoning_data_sizes_bytes: tuple[int, ...] = (256, 512, 1024)
     task_deadline_seconds_range: tuple[int, int] = (3, 5)  #(30,120)
-    num_iot_features: int = 100
-    iot_features_per_node_range: tuple[int, int] = (2, 5)
+    num_iot_features: int = 200
+    iot_features_per_node_range: tuple[int, int] = (3, 6)
     # Gating: per subtask, one anchor server is drawn and K experts get a raw
     # score z ~ U(gating_score_range), where K = number of experts stored on
     # that anchor server (10-15).  gating = softmax(z / gating_temperature)
@@ -175,7 +175,7 @@ class ExperimentConfig:
     area_size: float = 1000.0
     cell_radius: float = 300.0
     num_antennas: int = 1
-    iot_features_per_device_range: tuple[int, int] = (6, 10)
+    iot_features_per_device_range: tuple[int, int] = (12, 16)
     iot_server_feature_overlap_ratio: float = 0.2
     iot_global_random_feature_fraction: float = 0.0
     experts_per_server: tuple[int, int] = (10, 15)
